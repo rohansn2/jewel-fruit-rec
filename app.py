@@ -17,6 +17,7 @@ from utils.usda_api import (
     financial_metrics, get_wholesale_prices,
 )
 from utils.competitor_api import get_competitor_prices
+from utils.claude_chat import build_system_prompt, stream_claude_response
 
 # ── Page config ────────────────────────────────────────────────
 st.set_page_config(
@@ -141,6 +142,13 @@ with st.sidebar:
         st.rerun()
 
     st.divider()
+    st.subheader("🤖 Claude API")
+    st.caption("Powers the free-form chatbot. [Get a key ↗](https://console.anthropic.com)")
+    _claude_default = st.secrets.get("ANTHROPIC_API_KEY", "")
+    claude_api_key = st.text_input("Anthropic API Key", type="password",
+                                    value=_claude_default, placeholder="sk-ant-…")
+
+    st.divider()
     st.subheader("🔑 USDA API Key")
     st.caption("Pre-loaded from app secrets. Override below if needed.")
     _usda_default = st.secrets.get("USDA_API_KEY", "")
@@ -206,39 +214,62 @@ tab_recs, tab_finance, tab_chat = st.tabs([
 # ──────────────────────────────────────────────────────────────
 with tab_recs:
 
-    # ── Section 1: Candidate Fruit Profiles ──────────────────
-    st.subheader("🍎 Candidate Fruits")
-    st.caption("Annual lbs consumed per customer by ethnicity — estimated from loyalty data. Filter to sort by demographic.")
+    # ── Section 1: Top 5 Recommendations ─────────────────────
+    st.subheader(f"🏆 Top 5 Recommendations — {selected_city}")
+    st.caption("Opportunity score indexed to chain average (100). Updates live with weight adjustments in the sidebar.")
 
-    sel_eth = st.radio("Sort by demographic", ETHNICITIES, horizontal=True, key="recs_eth_filter")
-    lbs_ranked = sorted(FRUITS, key=lambda f: DATA["lbs"][f].get(sel_eth, 0), reverse=True)
+    def _appeal_label(fruit):
+        """Count how many demographics buy ≥1.5 lbs/yr to gauge breadth."""
+        lbs = DATA["lbs"][fruit]
+        count = sum(1 for e in ETHNICITIES if lbs.get(e, 0) >= 1.5)
+        if count >= 3: return "🌐 Broad appeal"
+        if count >= 2: return "📊 Moderate reach"
+        return "🎯 Niche"
 
-    for fruit in lbs_ranked:
-        lbs  = DATA["lbs"][fruit]
-        sc   = scores[fruit]
-        desc = BACKEND["descriptions"].get(fruit, "")
-        with st.expander(
-            f"{score_color(sc)} **{fruit}** — {lbs.get(sel_eth, 0):.1f} lbs/yr ({sel_eth}) · Score {sc}",
-            expanded=False,
-        ):
-            c1, c2 = st.columns([2, 1])
+    def _quick_fin(fruit):
+        """Quick estimate using fallback costs + 45% markup. No API calls."""
+        fb = FALLBACK_COSTS[fruit]
+        return financial_metrics(fruit, fb["low"], fb["high"], 45)
+
+    _chain_eth = DATA["chain_eth"]
+
+    for i, (fruit, score) in enumerate(top5):
+        insight = BACKEND["insights"][sid].get(fruit, "")
+        desc    = BACKEND["descriptions"].get(fruit, "")
+        lbs     = DATA["lbs"][fruit]
+        qfm     = _quick_fin(fruit)
+        badge   = _appeal_label(fruit)
+
+        # Sort demographics by demand potential at this store (store_share × lbs)
+        drivers = sorted(
+            [(e, share.get(e, 0) * 100, lbs.get(e, 0)) for e in ETHNICITIES],
+            key=lambda x: (x[1] / 100) * x[2],
+            reverse=True,
+        )
+
+        with st.container():
+            c1, c2 = st.columns([3, 1])
             with c1:
-                fig_lbs = go.Figure(go.Bar(
-                    x=ETHNICITIES,
-                    y=[lbs.get(e, 0) for e in ETHNICITIES],
-                    marker_color=[ETH_COLORS[e] for e in ETHNICITIES],
-                    text=[f"{lbs.get(e,0):.1f}" for e in ETHNICITIES],
-                    textposition="outside",
-                ))
-                fig_lbs.update_layout(
-                    height=220, margin=dict(l=0, r=0, t=10, b=0),
-                    yaxis_title="Lbs/yr per customer", showlegend=False,
+                st.markdown(f"**#{i+1} — {fruit}** &nbsp;&nbsp; `{badge}`")
+                st.caption(desc)
+                if insight:
+                    st.info(insight, icon="💡")
+                sub_s, sub_f = st.columns(2)
+                sub_s.caption(f"🗓 **Timing:** {SEASONALITY.get(fruit, '—')}")
+                sub_f.caption(
+                    f"💰 **Est. retail ~${qfm['retail_price']:.2f} · ~{qfm['gross_margin_pct']:.0f}% margin** "
+                    f"(fallback estimate — see Financial tab for full analysis)"
                 )
-                st.plotly_chart(fig_lbs, use_container_width=True)
             with c2:
-                st.write(desc)
-                st.caption(f"**Seasonality:** {SEASONALITY.get(fruit, '—')}")
-                st.metric("Opportunity Score", sc, f"{sc-100:+.1f} vs chain")
+                st.metric("Opportunity Score", f"{score}")
+                st.markdown("**👥 Who drives demand:**")
+                for eth, store_pct, eth_lbs in drivers:
+                    if eth_lbs >= 0.3:
+                        chain_pct = _chain_eth.get(eth, 0) * 100
+                        diff = store_pct - chain_pct
+                        arrow = "↑" if diff > 1 else ("↓" if diff < -1 else "→")
+                        st.caption(f"{eth}: {store_pct:.1f}% {arrow} · {eth_lbs:.1f} lbs/yr")
+            st.divider()
 
     st.divider()
 
@@ -298,27 +329,39 @@ with tab_recs:
 
     st.divider()
 
-    # ── Section 3: Top 5 Recommendations ─────────────────────
-    st.subheader(f"🏆 Top 5 Recommendations — {selected_city}")
-    st.caption("Opportunity score indexed to chain average (100). Updates live with weight adjustments in the sidebar.")
+    # ── Section 3: Candidate Fruits ──────────────────────────
+    st.subheader("🍎 Candidate Fruits")
+    st.caption("Annual lbs consumed per customer by ethnicity — estimated from loyalty data. Filter to sort by demographic.")
 
-    for i, (fruit, score) in enumerate(top5):
-        insight = BACKEND["insights"][sid].get(fruit, "")
-        desc    = BACKEND["descriptions"].get(fruit, "")
-        prim    = BACKEND["primary"][sid].get(fruit, "")
+    sel_eth = st.radio("Sort by demographic", ETHNICITIES, horizontal=True, key="recs_eth_filter")
+    lbs_ranked = sorted(FRUITS, key=lambda f: DATA["lbs"][f].get(sel_eth, 0), reverse=True)
 
-        with st.container():
-            c1, c2 = st.columns([3, 1])
+    for fruit in lbs_ranked:
+        lbs  = DATA["lbs"][fruit]
+        sc   = scores[fruit]
+        desc = BACKEND["descriptions"].get(fruit, "")
+        with st.expander(
+            f"{score_color(sc)} **{fruit}** — {lbs.get(sel_eth, 0):.1f} lbs/yr ({sel_eth}) · Score {sc}",
+            expanded=False,
+        ):
+            c1, c2 = st.columns([2, 1])
             with c1:
-                st.markdown(f"**#{i+1} — {fruit}**")
-                st.caption(desc)
-                if insight:
-                    st.info(insight, icon="💡")
+                fig_lbs = go.Figure(go.Bar(
+                    x=ETHNICITIES,
+                    y=[lbs.get(e, 0) for e in ETHNICITIES],
+                    marker_color=[ETH_COLORS[e] for e in ETHNICITIES],
+                    text=[f"{lbs.get(e,0):.1f}" for e in ETHNICITIES],
+                    textposition="outside",
+                ))
+                fig_lbs.update_layout(
+                    height=220, margin=dict(l=0, r=0, t=10, b=0),
+                    yaxis_title="Lbs/yr per customer", showlegend=False,
+                )
+                st.plotly_chart(fig_lbs, use_container_width=True)
             with c2:
-                st.metric("Opportunity Score", f"{score}", delta=f"{score-100:+.1f} vs chain")
-                if prim:
-                    st.caption(f"Primary: **{prim}** shoppers")
-            st.divider()
+                st.write(desc)
+                st.caption(f"**Seasonality:** {SEASONALITY.get(fruit, '—')}")
+                st.metric("Opportunity Score", sc)
 
 
 # ──────────────────────────────────────────────────────────────
@@ -741,43 +784,96 @@ def generate_response(msg: str) -> str:
 
 with tab_chat:
     st.subheader(f"💬 Ask the Recommender — {selected_city}")
-    st.caption("Query demographics, scores, wholesale prices, seasonality, or target a specific demographic.")
+
+    # ── Mode banner ───────────────────────────────────────────
+    if claude_api_key:
+        st.success(
+            "✅ **Claude AI mode** — ask anything about this store's data. "
+            "Responses are generated by Claude using your store's loyalty data.",
+            icon="🤖",
+        )
+    else:
+        st.info(
+            "⚡ **Quick-answer mode** — add your Anthropic API key in the sidebar "
+            "to unlock free-form AI answers. Currently using pattern-matched responses.",
+            icon="ℹ️",
+        )
+
+    # ── Build Claude context (once per store selection) ───────
+    if claude_api_key:
+        _loyalty_default = int(WEEKLY_LOYALTY.get(sid, 150))
+        _system_prompt = build_system_prompt(
+            store_id=current_store,
+            selected_city=selected_city,
+            data=DATA,
+            backend=BACKEND,
+            scores=scores,
+            ranked=ranked,
+            top5=top5,
+            weekly_loyalty=_loyalty_default,
+            fallback_costs=FALLBACK_COSTS,
+            freight_costs=FREIGHT_COSTS,
+            shrink_rates=SHRINK_RATES,
+            seasonality=SEASONALITY,
+            financial_metrics_fn=financial_metrics,
+        )
 
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
-    # Suggestion chips
+    # ── Suggestion chips ──────────────────────────────────────
     suggestions = [
         "Give me a store overview",
         "What's the fruit spend share here?",
-        "How would Dragonfruit do?",
-        "Rank all fruits for this store",
-        "Target Asian and Hispanic shoppers",
-        "What's the wholesale price of Lychee?",
+        "How would Dragonfruit do here?",
+        "Which fruit has the best margin?",
+        "What should I pitch to Hispanic shoppers?",
+        "Compare Lychee vs Jackfruit for this store",
     ]
     cols = st.columns(3)
     for i, sug in enumerate(suggestions):
         if cols[i % 3].button(sug, use_container_width=True, key=f"sug_{i}"):
             st.session_state.messages.append({"role": "user", "content": sug})
-            st.session_state.messages.append({"role": "assistant",
-                                               "content": generate_response(sug)})
+            if claude_api_key:
+                # Collect full streamed response synchronously for history
+                full = "".join(stream_claude_response(
+                    [{"role": "user", "content": sug}],
+                    _system_prompt, claude_api_key,
+                ))
+            else:
+                full = generate_response(sug)
+            st.session_state.messages.append({"role": "assistant", "content": full})
+            st.rerun()
 
     st.divider()
 
-    # Render history
+    # ── Render history ────────────────────────────────────────
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    # Input
+    # ── Input ─────────────────────────────────────────────────
     if prompt := st.chat_input("Ask about fruits, demographics, prices, margins…"):
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
-        response = generate_response(prompt)
+
+        if claude_api_key:
+            # Pass full history (excluding latest; it's already appended above)
+            api_messages = [
+                {"role": m["role"], "content": m["content"]}
+                for m in st.session_state.messages
+            ]
+            with st.chat_message("assistant"):
+                response = st.write_stream(
+                    stream_claude_response(api_messages, _system_prompt, claude_api_key)
+                )
+        else:
+            response = generate_response(prompt)
+            with st.chat_message("assistant"):
+                st.markdown(response)
+
         st.session_state.messages.append({"role": "assistant", "content": response})
-        with st.chat_message("assistant"):
-            st.markdown(response)
 
     if st.button("🗑️ Clear chat", key="clear_chat"):
         st.session_state.messages = []
