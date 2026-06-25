@@ -482,11 +482,12 @@ with tab_finance:
     g_retail, g_retail_label = resolve_retail(glance_fruit, _gfm_pre["effective_cost"])
     gfm   = financial_metrics(glance_fruit, gws_l, gws_h, markup_pct,
                                freight_multiplier=freight_multiplier, observed_retail=g_retail)
-    gfc   = FREIGHT_COSTS.get(glance_fruit, {})
-    gwlbs = sum(share.get(eth, 0) * DATA["lbs"][glance_fruit].get(eth, 0) for eth in ETHNICITIES)
-    glbs  = gwlbs * (capture_pct / 100) * annual_customers
-    grev  = glbs * gfm["retail_price"]
-    gcost = glbs * gfm["effective_cost"]
+    gfc          = FREIGHT_COSTS.get(glance_fruit, {})
+    gwlbs        = sum(share.get(eth, 0) * DATA["lbs"][glance_fruit].get(eth, 0) for eth in ETHNICITIES)
+    glbs_ordered = gwlbs * (capture_pct / 100) * annual_customers
+    glbs         = glbs_ordered * (1 - gfm["shrink_pct"] / 100)   # shrink-adjusted sellable units
+    grev         = glbs * gfm["retail_price"]
+    gcost        = glbs * gfm["effective_cost"]
     gsrc  = gp.get("source", "Hypothetical estimate")
     gdate = gp.get("date", "")
 
@@ -506,7 +507,8 @@ with tab_finance:
     st.caption(
         f"Freight: {gfc.get('origin','—')} via {gfc.get('port','—')}  ·  {gfc.get('note','')}  \n"
         f"Price source: **{gsrc}**" + (f" · as of {gdate}" if gdate else "") +
-        f"  ·  Based on {capture_pct}% capture of {gwlbs:.2f} wtd lbs/customer/yr × {annual_customers:,} annual customers"
+        f"  ·  {capture_pct}% capture × {gwlbs:.2f} wtd lbs/customer/yr × {annual_customers:,} annual customers "
+        f"= {glbs_ordered:,.0f} lbs ordered → {glbs:,.0f} lbs sold after {gfm['shrink_pct']:.0f}% shrink"
     )
 
     st.divider()
@@ -521,9 +523,10 @@ with tab_finance:
         t_retail, t_retail_label = resolve_retail(fruit, _fm_pre["effective_cost"])
         fm = financial_metrics(fruit, ws_low, ws_high, markup_pct, freight_multiplier=freight_multiplier, observed_retail=t_retail)
         # Weighted lbs/customer/yr for this store's ethnic mix
-        weighted_lbs = sum(share.get(eth, 0) * DATA["lbs"][fruit].get(eth, 0) for eth in ETHNICITIES)
-        est_lbs_sold = weighted_lbs * (capture_pct / 100) * annual_customers
-        est_revenue  = est_lbs_sold * fm["retail_price"]
+        weighted_lbs    = sum(share.get(eth, 0) * DATA["lbs"][fruit].get(eth, 0) for eth in ETHNICITIES)
+        est_lbs_ordered = weighted_lbs * (capture_pct / 100) * annual_customers
+        est_lbs_sold    = est_lbs_ordered * (1 - fm["shrink_pct"] / 100)   # shrink-adjusted sellable units
+        est_revenue     = est_lbs_sold * fm["retail_price"]
         fc = FREIGHT_COSTS.get(fruit, {})
         rows.append({
             "Fruit":               fruit,
@@ -536,7 +539,8 @@ with tab_finance:
             "Retail Price":        f"${fm['retail_price']:.2f} ({t_retail_label})",
             "Gross Margin":        f"{fm['gross_margin_pct']:.1f}%",
             "Wtd lbs/customer/yr": f"{weighted_lbs:.2f}",
-            f"Est. lbs/yr ({capture_pct}%)": f"{est_lbs_sold:,.0f}",
+            f"Est. lbs ordered ({capture_pct}%)": f"{est_lbs_ordered:,.0f}",
+            f"Est. lbs sold (after shrink)": f"{est_lbs_sold:,.0f}",
             "Est. Annual Revenue": f"${est_revenue:,.0f}",
             "Freight Origin":      fc.get("origin", "—"),
             "Entry Port":          fc.get("port", "—"),
@@ -546,8 +550,9 @@ with tab_finance:
     df_fin = pd.DataFrame(rows).set_index("Fruit")
     st.dataframe(df_fin, use_container_width=True)
     st.caption(
-        f"Revenue = retail price × weighted lbs/customer/yr × {capture_pct}% capture × "
-        f"{annual_customers:,} annual customers ({num_customers:,}/wk × 52). "
+        f"Revenue = retail price × lbs sold after shrink. "
+        f"Lbs ordered = wtd lbs/customer/yr × {capture_pct}% capture × {annual_customers:,} annual customers. "
+        f"Lbs sold = lbs ordered × (1 − shrink%). "
         "For per-unit (ea) fruits, lbs is used as a demand proxy — treat revenue as directional."
     )
 
@@ -566,9 +571,10 @@ with tab_finance:
         orig= p.get("origin",  "")
         date= p.get("date",    "")
 
-        weighted_lbs_d = sum(share.get(eth, 0) * DATA["lbs"][fruit].get(eth, 0) for eth in ETHNICITIES)
-        est_lbs_d      = weighted_lbs_d * (capture_pct / 100) * annual_customers
-        est_rev_d      = est_lbs_d * fm["retail_price"]
+        weighted_lbs_d    = sum(share.get(eth, 0) * DATA["lbs"][fruit].get(eth, 0) for eth in ETHNICITIES)
+        est_lbs_ordered_d = weighted_lbs_d * (capture_pct / 100) * annual_customers
+        est_lbs_d         = est_lbs_ordered_d * (1 - fm["shrink_pct"] / 100)   # shrink-adjusted sellable units
+        est_rev_d         = est_lbs_d * fm["retail_price"]
 
         dfc = FREIGHT_COSTS.get(fruit, {})
         with st.expander(f"**#{i+1} {fruit}** — Score {score} · Est. revenue ${est_rev_d:,.0f}/yr"):
@@ -578,7 +584,8 @@ with tab_finance:
             mc3.metric("Landed Cost", f"${fm['landed_cost']:.2f}",   f"→ ${fm['effective_cost']:.2f} after {fm['shrink_pct']:.0f}% shrink")
             mc4.metric("Est. Retail", f"${fm['retail_price']:.2f}",  f"@ {markup_pct}% markup")
             mc5.metric("Gross Margin",f"{fm['gross_margin_pct']:.1f}%", f"${fm['retail_price']-fm['effective_cost']:.2f}/unit")
-            mc6.metric("Est. Revenue",f"${est_rev_d:,.0f}",          f"{capture_pct}% of {weighted_lbs_d:.2f} lbs/customer/yr")
+            mc6.metric("Est. Revenue",f"${est_rev_d:,.0f}",
+                       f"{est_lbs_d:,.0f} lbs sold ({est_lbs_ordered_d:,.0f} ordered − {fm['shrink_pct']:.0f}% shrink)")
 
             if orig or date:
                 st.caption(f"Source: {src}" + (f" · Origin: {orig}" if orig else "") +
