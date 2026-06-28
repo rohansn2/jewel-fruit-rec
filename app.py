@@ -126,20 +126,20 @@ with st.sidebar:
     st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/3/38/Jewel-Osco_logo.svg/320px-Jewel-Osco_logo.svg.png", width=140)
     st.title("🍎 Fruit Recommender")
     st.caption("Jewel-Osco Non-Traditional Fruit Opportunity Tool")
+    st.markdown(
+        "This tool helps store managers identify which specialty fruits to stock "
+        "based on the ethnic demographics of their location and estimated financial returns.\n\n"
+        "**What's in each tab:**\n"
+        "- 🏆 **Recommendations** — Top 5 fruits ranked for this store, with demographic context and seasonality\n"
+        "- 💰 **Financial Feasibility** — Cost, margin, and revenue estimates for all 8 candidate fruits\n"
+        "- 🔬 **Analyst** — Adjust scoring weights, pricing assumptions, and capture rate\n"
+        "- 💬 **Ask the Recommender** — Ask questions about this store's data in plain English"
+    )
     st.divider()
 
     store_names = {s["id"]: s["city"] for s in DATA["stores"]}
     selected_city = st.selectbox("Select Store", list(store_names.values()))
     current_store = next(s["id"] for s in DATA["stores"] if s["city"] == selected_city)
-
-    st.divider()
-    st.subheader("⚙️ Scoring Weights")
-    st.caption("Adjust how much each factor influences the opportunity score.")
-    w_share = st.slider("Shopper Share",   0.5, 2.0, 1.0, 0.1, help="Weight on store ethnic mix")
-    w_vol   = st.slider("Volume Potential",0.5, 2.0, 1.0, 0.1, help="Novelty discount × comparable baseline")
-    w_aff   = st.slider("Ethnic Affinity", 0.5, 2.0, 1.0, 0.1, help="Consumer index for each demographic")
-    if st.button("↺ Reset weights", use_container_width=True):
-        st.rerun()
 
     st.divider()
     st.subheader("🤖 Claude API")
@@ -169,6 +169,17 @@ with st.sidebar:
 
 
 # ══════════════════════════════════════════════════════════════
+# ANALYST DEFAULTS — read from session_state (Analyst tab writes these)
+# ══════════════════════════════════════════════════════════════
+w_share            = st.session_state.get("w_share", 1.0)
+w_vol              = st.session_state.get("w_vol", 1.0)
+w_aff              = st.session_state.get("w_aff", 1.0)
+markup_pct         = st.session_state.get("markup_pct", 45)
+positioning_pct    = st.session_state.get("positioning_pct", 0)
+freight_multiplier = st.session_state.get("freight_multiplier", 1.0)
+capture_pct        = st.session_state.get("capture_pct", 15)
+
+# ══════════════════════════════════════════════════════════════
 # COMPUTE SCORES
 # ══════════════════════════════════════════════════════════════
 scores    = compute_scores(current_store, DATA, w_share, w_vol, w_aff)
@@ -189,23 +200,12 @@ def get_observed(fruit: str) -> float | None:
 # ══════════════════════════════════════════════════════════════
 st.header(f"🏪 {selected_city} Store", divider="green")
 
-col_b, col_c, col_d = st.columns(3)
-col_b.metric("Largest Demographic",
-             max(ETHNICITIES, key=lambda e: share.get(e, 0)),
-             f"{max(share.get(e,0) for e in ETHNICITIES)*100:.1f}% of shoppers")
-col_c.metric("Fruit Basket Share", f"{spend['Overall']:.2f}%", "of total grocery spend")
-top_eth = max(ETHNICITIES, key=lambda e: share.get(e, 0))
-col_d.metric(f"{top_eth} Fruit Spend", f"{spend[top_eth]:.2f}%",
-             f"{spend[top_eth]-spend['Overall']:+.2f}pp vs overall")
-
-st.divider()
-
 
 # ══════════════════════════════════════════════════════════════
 # TABS
 # ══════════════════════════════════════════════════════════════
-tab_recs, tab_finance, tab_chat = st.tabs([
-    "🏆 Recommendations", "💰 Financial Feasibility", "💬 Ask the Recommender"
+tab_recs, tab_finance, tab_analyst, tab_chat = st.tabs([
+    "🏆 Recommendations", "💰 Financial Feasibility", "🔬 Analyst", "💬 Ask the Recommender"
 ])
 
 
@@ -213,10 +213,20 @@ tab_recs, tab_finance, tab_chat = st.tabs([
 # TAB 1: RECOMMENDATIONS
 # ──────────────────────────────────────────────────────────────
 with tab_recs:
+    st.caption(
+        "Which specialty fruits are the best fit for this store? "
+        "Rankings are based on who shops here and how much each demographic typically buys. "
+        "Use the **Analyst** tab to adjust the assumptions behind these rankings."
+    )
+    st.divider()
 
     # ── Section 1: Top 5 Recommendations ─────────────────────
     st.subheader(f"🏆 Top 5 Recommendations — {selected_city}")
-    st.caption("Opportunity score indexed to chain average (100). Updates live with weight adjustments in the sidebar.")
+
+    def _opp_tier(score):
+        if score >= 110: return "🟢 High opportunity"
+        if score >= 90:  return "🟡 Medium opportunity"
+        return "🔴 Low opportunity"
 
     def _appeal_label(fruit):
         """Count how many demographics buy ≥1.5 lbs/yr to gauge breadth."""
@@ -261,7 +271,7 @@ with tab_recs:
                     f"(fallback estimate — see Financial tab for full analysis)"
                 )
             with c2:
-                st.metric("Opportunity Score", f"{score}")
+                st.markdown(f"**{_opp_tier(score)}**")
                 st.markdown("**👥 Who drives demand:**")
                 for eth, store_pct, eth_lbs in drivers:
                     if eth_lbs >= 0.3:
@@ -341,7 +351,7 @@ with tab_recs:
         sc   = scores[fruit]
         desc = BACKEND["descriptions"].get(fruit, "")
         with st.expander(
-            f"{score_color(sc)} **{fruit}** — {lbs.get(sel_eth, 0):.1f} lbs/yr ({sel_eth}) · Score {sc}",
+            f"{score_color(sc)} **{fruit}** — {lbs.get(sel_eth, 0):.1f} lbs/yr ({sel_eth}) · {_opp_tier(sc)}",
             expanded=False,
         ):
             c1, c2 = st.columns([2, 1])
@@ -361,41 +371,21 @@ with tab_recs:
             with c2:
                 st.write(desc)
                 st.caption(f"**Seasonality:** {SEASONALITY.get(fruit, '—')}")
-                st.metric("Opportunity Score", sc)
+                st.markdown(f"**{_opp_tier(sc)}**")
 
 
 # ──────────────────────────────────────────────────────────────
 # TAB 4: FINANCIAL FEASIBILITY
 # ──────────────────────────────────────────────────────────────
 with tab_finance:
+    st.caption(
+        "Estimated costs, pricing, and revenue for each fruit at this store. "
+        "Wholesale prices come from USDA market data where available, with hypothetical estimates as a fallback. "
+        "Retail pricing uses Mariano's Chicago as a competitor baseline. "
+        "To adjust markup, freight, or capture rate assumptions, go to the **Analyst** tab."
+    )
+    st.divider()
     st.subheader("💰 Financial Feasibility")
-
-    fin_col1, fin_col2, fin_col3 = st.columns([2, 1, 1])
-    with fin_col1:
-        st.caption(
-            "Wholesale prices: USDA Chicago Terminal Market. "
-            "Competitor retail: Mariano's Chicago (Kroger API). "
-            "Add your Kroger credentials in the sidebar to load live competitor prices."
-        )
-    with fin_col2:
-        positioning_pct = st.slider(
-            "Price vs. competitor (%)",
-            min_value=-20, max_value=20, value=0, step=1,
-            help="0% = match Mariano's price. Positive = price above market. "
-                 "Negative = undercut. Applies to fruits with competitor data."
-        )
-        markup_pct = st.number_input(
-            "Markup % (no competitor data)",
-            min_value=10, max_value=100, value=45, step=5,
-            help="Used as fallback for fruits not found at Mariano's.",
-        )
-    with fin_col3:
-        freight_multiplier = st.slider(
-            "Freight multiplier",
-            min_value=0.5, max_value=2.0, value=1.0, step=0.1,
-            help="Scale baseline freight estimates. 1.0 = baseline. "
-                 "Increase for peak season or tight capacity.",
-        )
 
     # ── Fetch competitor prices ───────────────────────────────
     if kroger_id and kroger_secret:
@@ -411,29 +401,8 @@ with tab_finance:
         comp_prices = {}
         st.info("🏪 Add Kroger credentials in the sidebar to load competitor pricing as retail baseline.")
 
-    st.divider()
-    st.subheader("📦 Revenue Estimation")
-    st.caption(
-        "Estimates annual revenue by applying a capture rate to the hypothetical lbs/customer figures "
-        "from our loyalty model, weighted by this store's ethnic shopper mix."
-    )
-    rev_col1, rev_col2 = st.columns(2)
-    with rev_col1:
-        loyalty_default = int(WEEKLY_LOYALTY.get(sid, 150))
-        num_customers = st.number_input(
-            "Weekly unique customers at this store",
-            min_value=100, max_value=50000, value=loyalty_default, step=50,
-            key=f"num_customers_{sid}",
-            help=f"Default = avg weekly loyalty cardholders from transaction data ({loyalty_default:,}). "
-                 "Actual store traffic will be higher — adjust upward to account for non-loyalty shoppers.",
-        )
-    with rev_col2:
-        capture_pct = st.slider(
-            "% of hypothetical consumption captured",
-            min_value=1, max_value=100, value=15, step=1,
-            help="What share of the modeled lbs/customer/yr you expect to actually sell. "
-                 "15% is a reasonable starting point for a new specialty item.",
-        )
+    loyalty_default  = int(WEEKLY_LOYALTY.get(sid, 150))
+    num_customers    = st.session_state.get(f"num_customers_{sid}", loyalty_default)
     annual_customers = num_customers * 52
 
     # Fetch prices
@@ -513,8 +482,9 @@ with tab_finance:
 
     st.divider()
 
-    # Table view
+    # ── Build all rows (one pass, reused by both tables) ─────
     rows = []
+    summary_rows = []
     for fruit, score in ranked:
         p = prices.get(fruit, {})
         ws_low  = p.get("low",  FALLBACK_COSTS[fruit]["low"])
@@ -522,12 +492,24 @@ with tab_finance:
         _fm_pre = financial_metrics(fruit, ws_low, ws_high, markup_pct, freight_multiplier=freight_multiplier)
         t_retail, t_retail_label = resolve_retail(fruit, _fm_pre["effective_cost"])
         fm = financial_metrics(fruit, ws_low, ws_high, markup_pct, freight_multiplier=freight_multiplier, observed_retail=t_retail)
-        # Weighted lbs/customer/yr for this store's ethnic mix
         weighted_lbs    = sum(share.get(eth, 0) * DATA["lbs"][fruit].get(eth, 0) for eth in ETHNICITIES)
         est_lbs_ordered = weighted_lbs * (capture_pct / 100) * annual_customers
-        est_lbs_sold    = est_lbs_ordered * (1 - fm["shrink_pct"] / 100)   # shrink-adjusted sellable units
+        est_lbs_sold    = est_lbs_ordered * (1 - fm["shrink_pct"] / 100)
         est_revenue     = est_lbs_sold * fm["retail_price"]
         fc = FREIGHT_COSTS.get(fruit, {})
+
+        # Raw numeric row for summary tables
+        summary_rows.append({
+            "Fruit":             fruit,
+            "_revenue":          est_revenue,
+            "_margin":           fm["gross_margin_pct"],
+            "Est. Retail":       f"${fm['retail_price']:.2f}",
+            "Gross Margin":      f"{fm['gross_margin_pct']:.1f}%",
+            "Est. Annual Revenue": f"${est_revenue:,.0f}",
+            "Price Source":      t_retail_label,
+        })
+
+        # Formatted row for full detail table
         rows.append({
             "Fruit":               fruit,
             "Opp. Score":          score,
@@ -547,13 +529,45 @@ with tab_finance:
             "WS Source":           p.get("source", "—"),
         })
 
+    # ── Summary: Top 5 by Revenue & Margin ───────────────────
+    st.subheader("📊 Top 5 at a Glance")
+    sum_col1, sum_col2 = st.columns(2)
+
+    df_summary = pd.DataFrame(summary_rows)
+
+    with sum_col1:
+        st.caption("**By estimated annual revenue**")
+        df_rev = (df_summary
+                  .sort_values("_revenue", ascending=False)
+                  .head(5)[["Fruit", "Est. Annual Revenue", "Gross Margin", "Est. Retail", "Price Source"]]
+                  .reset_index(drop=True))
+        df_rev.index = df_rev.index + 1   # rank from 1
+        st.dataframe(df_rev.set_index("Fruit"), use_container_width=True)
+
+    with sum_col2:
+        st.caption("**By gross margin**")
+        df_mgn = (df_summary
+                  .sort_values("_margin", ascending=False)
+                  .head(5)[["Fruit", "Gross Margin", "Est. Annual Revenue", "Est. Retail", "Price Source"]]
+                  .reset_index(drop=True))
+        df_mgn.index = df_mgn.index + 1
+        st.dataframe(df_mgn.set_index("Fruit"), use_container_width=True)
+
+    st.caption(
+        f"Revenue = retail price × lbs sold after shrink  ·  "
+        f"{capture_pct}% capture rate  ·  {num_customers:,} weekly customers  ·  "
+        "For per-unit fruits, lbs is used as a demand proxy — treat revenue as directional."
+    )
+
+    st.divider()
+
+    # ── Full detail table ─────────────────────────────────────
+    st.subheader("📋 Full Cost & Revenue Breakdown")
     df_fin = pd.DataFrame(rows).set_index("Fruit")
     st.dataframe(df_fin, use_container_width=True)
     st.caption(
-        f"Revenue = retail price × lbs sold after shrink. "
         f"Lbs ordered = wtd lbs/customer/yr × {capture_pct}% capture × {annual_customers:,} annual customers. "
-        f"Lbs sold = lbs ordered × (1 − shrink%). "
-        "For per-unit (ea) fruits, lbs is used as a demand proxy — treat revenue as directional."
+        f"Lbs sold = lbs ordered × (1 − shrink%)."
     )
 
     st.divider()
@@ -608,7 +622,58 @@ with tab_finance:
 
 
 # ──────────────────────────────────────────────────────────────
-# TAB 5: CHATBOT
+# TAB 3: ANALYST
+# ──────────────────────────────────────────────────────────────
+with tab_analyst:
+    st.caption(
+        "Adjust the assumptions that drive scores, pricing, and revenue estimates. "
+        "Changes here update the Recommendations and Financial tabs in real time."
+    )
+    st.divider()
+
+    st.subheader("⚙️ Scoring Weights")
+    st.caption("Control how much each factor influences the opportunity score. 1.0 is the default — increase to emphasize that factor.")
+    a1, a2, a3 = st.columns(3)
+    with a1:
+        st.slider("Shopper Share", 0.5, 2.0, 1.0, 0.1, key="w_share",
+                  help="Weight on how well this store's demographic mix matches the fruit's buyer profile.")
+    with a2:
+        st.slider("Volume Potential", 0.5, 2.0, 1.0, 0.1, key="w_vol",
+                  help="Weight on estimated purchase volume, adjusted for novelty and comparability.")
+    with a3:
+        st.slider("Ethnic Affinity", 0.5, 2.0, 1.0, 0.1, key="w_aff",
+                  help="Weight on how strongly each demographic skews toward this fruit vs. average.")
+    if st.button("↺ Reset to defaults", key="reset_weights"):
+        for k in ["w_share", "w_vol", "w_aff"]:
+            st.session_state[k] = 1.0
+        st.rerun()
+
+    st.divider()
+    st.subheader("💰 Pricing & Cost Assumptions")
+    b1, b2, b3 = st.columns(3)
+    with b1:
+        st.slider("Price vs. Mariano's (%)", -20, 20, 0, 1, key="positioning_pct",
+                  help="0% = match competitor price. Positive = price above market. Negative = undercut.")
+        st.number_input("Fallback Markup %", min_value=10, max_value=100, value=45, step=5,
+                        key="markup_pct",
+                        help="Used when no competitor or loyalty price is available.")
+    with b2:
+        st.slider("Freight Multiplier", 0.5, 2.0, 1.0, 0.1, key="freight_multiplier",
+                  help="Scale freight estimates up or down. 1.0 = baseline. Increase during peak season.")
+    with b3:
+        loyalty_default_a = int(WEEKLY_LOYALTY.get(sid, 150))
+        st.number_input("Weekly Customers", min_value=100, max_value=50000,
+                        value=loyalty_default_a, step=50,
+                        key=f"num_customers_{sid}",
+                        help=f"Default from loyalty data: {loyalty_default_a:,}/wk. "
+                             "Adjust upward to account for non-loyalty shoppers.")
+        st.slider("Capture Rate (%)", 1, 100, 15, 1, key="capture_pct",
+                  help="What share of modeled demand you expect to actually sell. "
+                       "15% is a reasonable starting point for a new specialty item.")
+
+
+# ──────────────────────────────────────────────────────────────
+# TAB 4: CHATBOT
 # ──────────────────────────────────────────────────────────────
 
 # Fruit / demographic patterns
@@ -790,6 +855,12 @@ def generate_response(msg: str) -> str:
 
 
 with tab_chat:
+    st.caption(
+        "Ask questions about this store's data in plain English — "
+        "which fruits to stock, how demographics affect recommendations, margins, seasonality, or anything else. "
+        "Add your Anthropic API key in the sidebar to unlock AI-powered answers."
+    )
+    st.divider()
     st.subheader(f"💬 Ask the Recommender — {selected_city}")
 
     # ── Mode banner ───────────────────────────────────────────
