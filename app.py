@@ -223,6 +223,22 @@ with tab_recs:
     # ── Section 1: Top 5 Recommendations ─────────────────────
     st.subheader(f"🏆 Top 5 Recommendations — {selected_city}")
 
+    with st.expander("ℹ️ What do the labels mean?", expanded=False):
+        st.markdown(
+            "**Appeal badges** describe how many different shopper groups buy this fruit in meaningful volume:\n\n"
+            "- 🎯 **Targeted Pick** — strong fit for one specific shopper group at this store. "
+            "Not a weakness — if that group is well-represented here, this can be a high-confidence add.\n"
+            "- 📊 **Crossover Pick** — two distinct shopper groups buy this fruit regularly. "
+            "Broader shelf justification and lower demand risk.\n"
+            "- 🌐 **Community Staple** — three or more shopper groups buy it in solid volume. "
+            "Best candidate for a permanent fixture rather than a seasonal test.\n\n"
+            "**Opportunity tiers** are based on how well this store's shopper mix matches the fruit's buyer profile, "
+            "indexed against the chain average (100 = average store):\n\n"
+            "- 🟢 **High opportunity** — this store over-indexes significantly. Strong case to stock.\n"
+            "- 🟡 **Medium opportunity** — reasonable fit, worth a small-footprint trial.\n"
+            "- 🔴 **Lower opportunity** — below chain average. Consider only if shelf space allows."
+        )
+
     def _opp_tier(score):
         if score >= 110: return "🟢 High opportunity"
         if score >= 90:  return "🟡 Medium opportunity"
@@ -232,9 +248,9 @@ with tab_recs:
         """Count how many demographics buy ≥1.5 lbs/yr to gauge breadth."""
         lbs = DATA["lbs"][fruit]
         count = sum(1 for e in ETHNICITIES if lbs.get(e, 0) >= 1.5)
-        if count >= 3: return "🌐 Broad appeal"
-        if count >= 2: return "📊 Moderate reach"
-        return "🎯 Niche"
+        if count >= 3: return "🌐 Community Staple"
+        if count >= 2: return "📊 Crossover Pick"
+        return "🎯 Targeted Pick"
 
     def _quick_fin(fruit):
         """Quick estimate using fallback costs + 45% markup. No API calls."""
