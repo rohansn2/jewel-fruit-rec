@@ -545,38 +545,6 @@ with tab_finance:
             "WS Source":           p.get("source", "—"),
         })
 
-    # ── Summary: Top 5 by Revenue & Margin ───────────────────
-    st.subheader("📊 Top 5 at a Glance")
-    sum_col1, sum_col2 = st.columns(2)
-
-    df_summary = pd.DataFrame(summary_rows)
-
-    with sum_col1:
-        st.caption("**By estimated annual revenue**")
-        df_rev = (df_summary
-                  .sort_values("_revenue", ascending=False)
-                  .head(5)[["Fruit", "Est. Annual Revenue", "Gross Margin", "Est. Retail", "Price Source"]]
-                  .reset_index(drop=True))
-        df_rev.index = df_rev.index + 1   # rank from 1
-        st.dataframe(df_rev.set_index("Fruit"), use_container_width=True)
-
-    with sum_col2:
-        st.caption("**By gross margin**")
-        df_mgn = (df_summary
-                  .sort_values("_margin", ascending=False)
-                  .head(5)[["Fruit", "Gross Margin", "Est. Annual Revenue", "Est. Retail", "Price Source"]]
-                  .reset_index(drop=True))
-        df_mgn.index = df_mgn.index + 1
-        st.dataframe(df_mgn.set_index("Fruit"), use_container_width=True)
-
-    st.caption(
-        f"Revenue = retail price × lbs sold after shrink  ·  "
-        f"{capture_pct}% capture rate  ·  {num_customers:,} weekly customers  ·  "
-        "For per-unit fruits, lbs is used as a demand proxy — treat revenue as directional."
-    )
-
-    st.divider()
-
     # ── Full detail table ─────────────────────────────────────
     st.subheader("📋 Full Cost & Revenue Breakdown")
     df_fin = pd.DataFrame(rows).set_index("Fruit")
